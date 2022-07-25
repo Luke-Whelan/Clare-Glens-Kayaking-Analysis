@@ -1,0 +1,123 @@
+install.packages("tidyverse")
+install.packages("dplyr")  
+install.packages("ggplot2")
+install.packages("lavaan")
+install.packages("data.table")
+
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(lavaan)
+library(data.table)
+
+#Flow rate import, rename columns
+flow_rate_data <- read.table(file = "Flow_Rate 2002-2021.txt", header = FALSE,fill = TRUE)
+setDT(flow_rate_data)  
+flow_rate_data = rename(flow_rate_data, date = V1)
+flow_rate_data = rename(flow_rate_data, timestamp = V2)
+flow_rate_data = rename(flow_rate_data, cumecs = V3)
+flow_rate_data = rename(flow_rate_data, watertable = V4)
+flow_rate_data$cumecs <- as.numeric(flow_rate_data$cumecs)
+
+#Daylight hours import
+daylight <- read.csv(file ="Daylight.csv")
+
+#Enter no. years in data 
+no_years = 20
+
+#Add columns to compare last four readings (need four consecutive readings to count)
+flow_rate_data[ , minus_15_minutes := shift(cumecs,1,type="lag")]
+flow_rate_data[ , minus_30_minutes := shift(cumecs,2,type="lag")]
+flow_rate_data[ , minus_45_minutes := shift(cumecs,3,type="lag")]
+flow_rate_data[ , minus_60_minutes := shift(cumecs,4,type="lag")]
+flow_rate_data[, "minimum_last_hour"] <- apply(flow_rate_data[, 5:length(flow_rate_data)], 1, min, na.rm = TRUE)
+flow_rate_data[, "maximum_last_hour"] <- apply(flow_rate_data[, 5:length(flow_rate_data)], 1, max, na.rm = TRUE)
+
+
+#Filter out rows to remove rows outside of interest (i.e. water too low/high, or only partial data for that year)
+#filtered_frd = filtered flow rate data
+filtered_frd <- filter(flow_rate_data,flow_rate_data$minimum_last_hour > 10.3427 &
+                         flow_rate_data$maximum_last_hour < 40.3965 &
+                         flow_rate_data$date >= 2002/01/01 &
+                         flow_rate_data$date < 2022/01/01)
+
+#Add columns for year and day number for ease of processing later
+year <- year(filtered_frd$date)
+filtered_frd$year <- year
+day_no <- yday(filtered_frd$date)
+filtered_frd$day_no <- day_no
+
+#Merge flow rate data with daylight hours. Match days by day number
+filtered_frd = merge(daylight, filtered_frd, by = "day_no")
+
+#Used for tests
+days_with_water_year <- filtered_frd  %>% group_by(filtered_frd$date) %>% summarize()
+setDT(days_with_water_year)
+names(days_with_water_year)[1] <- "days"
+year <- year(days_with_water_year$days)
+days_with_water_year$year <- year
+month <- month(days_with_water_year$days)
+days_with_water_year$month <- month
+
+#Filter out rows outside of daylight hours
+filtered_frd_daylight <- filter(filtered_frd,
+                                filtered_frd$timestamp >= sunrise &
+                                filtered_frd$timestamp <= sunset)
+
+#Break date into day, month, year columns
+days_with_water_daylight <- filtered_frd_daylight  %>% group_by(filtered_frd_daylight$date) %>% summarize()
+setDT(days_with_water_daylight)
+names(days_with_water_daylight)[1] <- "days"
+year <- year(days_with_water_daylight$days)
+days_with_water_daylight$year <- year
+month <- month(days_with_water_daylight$days)
+days_with_water_daylight$month <- month
+
+#Group days by months. Find mean no. of days per month...tried to use mean() first but this seemed easier in the end
+summary <- days_with_water_daylight %>%
+  group_by(month) %>%
+  summarise(mean = n()/no_years)
+
+#Merge month number to name (e.g. 1 = Jan, 2 = Feb)
+summary$mon <- c("Jan", "Feb", "Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")
+days_with_water_daylight = merge(summary, days_with_water_daylight, by = "month")
+
+
+#Export tables for further data visualisation
+write.csv(summary,"Summary.csv", row.names = FALSE)
+write.csv(days_with_water_daylight,"days_with_water_daylight.csv", row.names = FALSE)
+days_with_water_daylight
+
+
+
+####Plots below####
+
+
+
+
+
+
+
+#Plot average days per month
+ggplot(summary, aes(x=reorder(mon,month), y=mean)) + 
+  ylim(0, 11.8)+
+  geom_bar(stat = "identity",fill="lightblue")+
+  labs(title="Average Runnable Days Per Month – Clare Glens 2002-2021")+
+  geom_text(aes(label = signif(mean, digits = 3)), nudge_y =-1)+
+  xlab("")+
+  ylab("No. Days")
+
+#Plot of year by year comparison. Need to fix axes
+ggplot(days_with_water_daylight, aes(x=month)) +
+  geom_histogram(fill="black") + facet_wrap(~year)
+
+#Plot of one month only
+month_filter <- filter(days_with_water_daylight,days_with_water_daylight$mon == "Dec")
+ggplot(month_filter, aes(x = year)) +
+  geom_histogram(binwidth = 1,fill="lightblue",col=I("black"))+
+  labs(title="Runnable Days in December – Clare Glens 2002-2021")+
+  ylim(0, 35)+
+  stat_bin(binwidth=1, geom="text", aes(label=..count..), vjust=-1.5) 
+
+
